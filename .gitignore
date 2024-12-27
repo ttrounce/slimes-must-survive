@@ -53,3 +53,5 @@ dkms.conf
 
 .vscode/
 *.rdbg
+
+shaders/pixel_glow.fs
