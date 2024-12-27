@@ -33,6 +33,12 @@ main :: proc() {
     }
 }
 
+restart :: proc(game: ^Game) {
+    clean(game)
+    mem.set(game, 0, size_of(Game))
+    setup(game)
+}
+
 Game :: struct {
     camera:           rl.Camera2D,
     world:            b2.WorldId,
@@ -136,12 +142,31 @@ setup :: proc(game: ^Game) {
     game.special_entities.player = new_entity(game, setup_entity_player)
 }
 
+clean :: proc(game: ^Game) {
+    b2.DestroyWorld(game.world)
+
+    for _, texture in game.textures {
+        rl.UnloadTexture(texture)
+    }
+
+    for _, shader in game.shaders {
+        rl.UnloadShader(shader)
+    }
+
+    delete(game.textures)
+    delete(game.shaders)
+}
+
 update :: proc(game: ^Game) {
     b2.World_Step(game.world, 1.0 / 60.0, 4)
 
     update_events(game)
 
     if rl.IsKeyPressed(.F2) {game.debug = !game.debug}
+    if game.special_entities.player.health.?.points <= 0 && rl.IsKeyPressed(.SPACE) {
+        restart(game)
+        return
+    }
 
     spawner(game)
 
@@ -388,6 +413,17 @@ draw_ui :: proc(game: ^Game) {
                 0,
                 rl.ColorAlpha(rl.WHITE, 0.5),
             )
+        }
+
+        if health.points <= 0 {
+            rl.DrawRectangle(0, 0, rl.GetScreenWidth(), rl.GetScreenHeight(), rl.ColorAlpha(rl.BLACK, 0.2))
+            death_text :: "You've reverted to a puddle..."
+            death_text_size :: 40
+            rl.DrawText(death_text, (rl.GetScreenWidth() - rl.MeasureText(death_text, death_text_size))/2.0, rl.GetScreenHeight()/4.0, death_text_size, rl.WHITE)
+
+            death_restart_text :: "Press SPACE to restart."
+            death_restart_text_size :: 20
+            rl.DrawText(death_restart_text, (rl.GetScreenWidth() - rl.MeasureText(death_restart_text, death_restart_text_size))/2.0, death_text_size + rl.GetScreenHeight()/4.0, death_restart_text_size, rl.WHITE)
         }
     }
 }
