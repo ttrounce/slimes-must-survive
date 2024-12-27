@@ -67,18 +67,19 @@ GameState_Play :: struct {}
 GameState_Menu :: struct {}
 
 Entity :: struct {
-    sprite:    string,
-    shader:    Maybe(ShaderInfo),
-    uv:        rl.Rectangle,
-    uv_origin: rl.Vector2,
-    uv_rot:    f32,
-    variant:   EntityVariant,
-    flags:     bit_set[EntityFlags],
-    body:      b2.BodyId,
-    shape:     b2.ShapeId,
-    expiry:    Maybe(time.Time),
-    birth:     time.Time,
-    health:    Maybe(Health),
+    sprite:         string,
+    shader:         Maybe(ShaderInfo),
+    uv:             rl.Rectangle,
+    uv_origin:      rl.Vector2,
+    uv_rot:         f32,
+    variant:        EntityVariant,
+    flags:          bit_set[EntityFlags],
+    body:           b2.BodyId,
+    shape:          b2.ShapeId,
+    expiry:         Maybe(time.Time),
+    birth:          time.Time,
+    health:         Maybe(Health),
+    sprite_upright: bool,
 }
 
 EntityFlags :: enum {
@@ -185,7 +186,7 @@ update_events :: proc(game: ^Game) {
         visitor := cast(^Entity)b2.Shape_GetUserData(ev.visitorShapeId)
 
         if spear, is_spear := sensor.variant.(Variant_EnemySpear); is_spear {
-            if health, has_health := &visitor.health.?; (has_health && health.points > 0){
+            if health, has_health := &visitor.health.?; (has_health && health.points > 0) {
                 health.points -= 1
             }
             b2.Body_SetLinearDamping(sensor.body, 3.5)
@@ -198,7 +199,7 @@ update_events :: proc(game: ^Game) {
         entity_b := cast(^Entity)b2.Shape_GetUserData(ev.shapeIdB)
         if skull, is_skull := entity_b.variant.(Variant_EnemySkull); is_skull {
             if player, is_player := entity_a.variant.(Variant_Player); is_player {
-                if health, has_health := &entity_a.health.?; (has_health && health.points > 0){
+                if health, has_health := &entity_a.health.?; (has_health && health.points > 0) {
                     health.points -= 1
                 }
             }
@@ -247,6 +248,7 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
         if !v.launched {
             if time.since(v.launch_time) > 0 {
                 v.launched = true
+                b2.Body_SetAngularVelocity(e.body, 0)
                 b2.Body_ApplyLinearImpulseToCenter(e.body, vec_to_player * v.force, true)
             } else {
                 impulse := b2.ComputeAngularVelocity(
@@ -261,12 +263,17 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
     case Variant_EnemySkull:
         player_pos := b2.Body_GetPosition(game.special_entities.player.body)
         vec_to_player := b2.Normalize(player_pos - pos)
-        
+
         if game.special_entities.player.health.?.points <= 0 {
             b2.Body_ApplyForceToCenter(e.body, -vec_to_player * v.force, true)
-        }
-        else
-        {
+        } else {
+            impulse := b2.ComputeAngularVelocity(
+                b2.Body_GetRotation(e.body),
+                b2.MakeRot(math.atan2(vec_to_player.y, vec_to_player.x)),
+                10,
+            )
+
+            b2.Body_SetAngularVelocity(e.body, impulse)
             b2.Body_ApplyForceToCenter(e.body, vec_to_player * v.force, true)
         }
     }
@@ -340,6 +347,14 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
 
         tint := rl.WHITE
         uv := e.uv
+
+        if e.sprite_upright {
+            angle := b2.Rot_GetAngle(b2.Body_GetRotation(e.body))
+            if angle > math.PI / 2.0 || angle < -math.PI / 2.0 {
+                uv.y = uv.y + uv.height
+                uv.height = -uv.height
+            }
+        }
 
         #partial switch v in e.variant {
         case Variant_EnemySpear:
@@ -416,14 +431,34 @@ draw_ui :: proc(game: ^Game) {
         }
 
         if health.points <= 0 {
-            rl.DrawRectangle(0, 0, rl.GetScreenWidth(), rl.GetScreenHeight(), rl.ColorAlpha(rl.BLACK, 0.2))
+            rl.DrawRectangle(
+                0,
+                0,
+                rl.GetScreenWidth(),
+                rl.GetScreenHeight(),
+                rl.ColorAlpha(rl.BLACK, 0.2),
+            )
             death_text :: "You've reverted to a puddle..."
             death_text_size :: 40
-            rl.DrawText(death_text, (rl.GetScreenWidth() - rl.MeasureText(death_text, death_text_size))/2.0, rl.GetScreenHeight()/4.0, death_text_size, rl.WHITE)
+            rl.DrawText(
+                death_text,
+                (rl.GetScreenWidth() - rl.MeasureText(death_text, death_text_size)) / 2.0,
+                rl.GetScreenHeight() / 4.0,
+                death_text_size,
+                rl.WHITE,
+            )
 
             death_restart_text :: "Press SPACE to restart."
             death_restart_text_size :: 20
-            rl.DrawText(death_restart_text, (rl.GetScreenWidth() - rl.MeasureText(death_restart_text, death_restart_text_size))/2.0, death_text_size + rl.GetScreenHeight()/4.0, death_restart_text_size, rl.WHITE)
+            rl.DrawText(
+                death_restart_text,
+                (rl.GetScreenWidth() -
+                    rl.MeasureText(death_restart_text, death_restart_text_size)) /
+                2.0,
+                death_text_size + rl.GetScreenHeight() / 4.0,
+                death_restart_text_size,
+                rl.WHITE,
+            )
         }
     }
 }
@@ -504,7 +539,6 @@ setup_entity_spear :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}) {
 
     body_def, shape_def := get_default_defs()
     body_def.position = pos
-    body_def.fixedRotation = true
     body_def.automaticMass = false
     body_def.linearDamping = 0
     body_def.isBullet = true
@@ -531,6 +565,7 @@ setup_entity_spear :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}) {
 
 setup_entity_skull :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}) {
     e.sprite = "skull"
+    e.sprite_upright = true
     e.uv = {0, 0, 16, 16}
     e.uv_origin = {8, 8}
     e.uv_rot = 0
@@ -568,7 +603,7 @@ spawner :: proc(game: ^Game) {
 
         spear := new_entity(game, setup_entity_spear, new_spear_pos)
         spear_v := &spear.variant.(Variant_EnemySpear)
-        spear_v.launch_time = time.time_add(time.now(), time.Second * 2)
+        spear_v.launch_time = time.time_add(time.now(), time.Millisecond * 1500)
 
         game.spawn_timers.next_spear = time.time_add(time.now(), time.Second * 2)
     case time.since(game.spawn_timers.next_skull) > 0:
