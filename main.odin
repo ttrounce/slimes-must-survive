@@ -107,7 +107,7 @@ EntityVariant :: union {
 
 Variant_Player :: struct {
     force:  f32,
-    weapon: WeaponVariant,
+    weapon: Weapon,
     last_shot: time.Time,
 }
 
@@ -132,14 +132,6 @@ Health :: struct {
 
 ContextWrapper :: struct {
     ctx: runtime.Context,
-}
-
-WeaponVariant :: union {
-    Variant_WeaponSlimeBolt,
-}
-
-Variant_WeaponSlimeBolt :: struct {
-    fire_rate: time.Duration
 }
 
 setup :: proc(game: ^Game) {
@@ -580,9 +572,7 @@ setup_entity_player :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, rot
     e.uv_origin = {8, 8}
     e.variant = Variant_Player {
         force = 4000,
-        weapon = Variant_WeaponSlimeBolt {
-            fire_rate = time.Millisecond*500
-        }
+        weapon = make_weapon(time.Millisecond*500, .SLIME_BOLT)
     }
     e.health = Health {
         points = 3,
@@ -698,9 +688,13 @@ aim_and_shoot :: proc(game: ^Game) {
 
     vec_to_mouse := b2.Normalize(rl.GetScreenToWorld2D(rl.GetMousePosition(), game.camera) - b2.Body_GetPosition(player.body))
 
-    switch v in variant.weapon {
-        case Variant_WeaponSlimeBolt:
-            if (rl.IsMouseButtonDown(.LEFT)) && time.since(variant.last_shot) > v.fire_rate {
+    if time.since(variant.last_shot) < variant.weapon.fire_rate {
+        return
+    }
+
+    switch variant.weapon.type {
+        case .SLIME_BOLT:
+            if (rl.IsMouseButtonDown(.LEFT)) {
                 bullet := new_entity(game, setup_entity_slime_bolt, b2.Body_GetPosition(player.body), b2.MakeRot(math.atan2(vec_to_mouse.y, vec_to_mouse.x)))
                 b2.Body_ApplyLinearImpulseToCenter(bullet.body, vec_to_mouse * bullet.variant.(Variant_Projectile).force, true)
                 rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.5, 1.5))
