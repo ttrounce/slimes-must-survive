@@ -11,6 +11,7 @@ import "core:math/linalg"
 import "core:math/rand"
 import "core:mem"
 import "core:time"
+import "util"
 
 START_WINDOW_SIZE :: [2]i32{800, 600}
 START_WINDOW_TITLE :: "Slimes Must Survive!"
@@ -59,6 +60,7 @@ Game :: struct {
     entities:         [MAX_ENTITIES]Entity,
     handle_counter:   u32,
     debug:            bool,
+    play_start_time:  time.Time,
     special_entities: struct {
         player: ^Entity,
     },
@@ -76,59 +78,6 @@ GameState :: union {
 
 GameState_Play :: struct {}
 GameState_Menu :: struct {}
-
-Entity :: struct {
-    sprite:         string,
-    shader:         Maybe(ShaderInfo),
-    uv:             rl.Rectangle,
-    uv_origin:      rl.Vector2,
-    uv_rot:         f32,
-    variant:        EntityVariant,
-    flags:          bit_set[EntityFlags],
-    body:           b2.BodyId,
-    shape:          b2.ShapeId,
-    expiry:         Maybe(time.Time),
-    birth:          time.Time,
-    health:         Maybe(Health),
-    sprite_upright: bool,
-    hit_time:       time.Time,
-}
-
-EntityFlags :: enum {
-    ALLOCATED,
-}
-
-EntityVariant :: union {
-    Variant_Player,
-    Variant_EnemySkull,
-    Variant_EnemySpear,
-    Variant_Projectile
-}
-
-Variant_Player :: struct {
-    force:  f32,
-    weapon: Weapon,
-    last_shot: time.Time,
-}
-
-Variant_EnemySpear :: struct {
-    force:       f32,
-    launch_time: time.Time,
-    launched:    bool,
-}
-
-Variant_EnemySkull :: struct {
-    force: f32,
-}
-
-Variant_Projectile :: struct {
-    force: f32,
-}
-
-Health :: struct {
-    points: int,
-    max:    int,
-}
 
 ContextWrapper :: struct {
     ctx: runtime.Context,
@@ -166,6 +115,8 @@ setup :: proc(game: ^Game) {
     game.sounds["slime_bolt"] = rl.LoadSound("assets/slime_bolt.ogg")
 
     game.special_entities.player = new_entity(game, setup_entity_player)
+
+    game.play_start_time = time.now()
 }
 
 clean :: proc(game: ^Game) {
@@ -193,7 +144,7 @@ update :: proc(game: ^Game) {
     update_events(game)
 
     if rl.IsKeyPressed(.F2) {game.debug = !game.debug}
-    if game.special_entities.player.health.?.points <= 0 && rl.IsKeyPressed(.SPACE) {
+    if !is_player_alive(game) && rl.IsKeyPressed(.SPACE) {
         restart(game)
         return
     }
@@ -224,13 +175,22 @@ update_events :: proc(game: ^Game) {
         }
     }
 
-    is_contact_pair :: proc (e0: ^Entity, e1: ^Entity, $T0: typeid, $T1: typeid) -> (^Entity, ^Entity, bool) {
+    is_contact_pair :: proc(
+        e0: ^Entity,
+        e1: ^Entity,
+        $T0: typeid,
+        $T1: typeid,
+    ) -> (
+        ^Entity,
+        ^Entity,
+        bool,
+    ) {
         _, e0_t0 := e0.variant.(T0)
         _, e1_t1 := e1.variant.(T1)
         _, e0_t1 := e0.variant.(T1)
         _, e1_t0 := e1.variant.(T0)
-        if e0_t0 && e1_t1 { return e0, e1, true }
-        if e0_t1 && e1_t0 { return e1, e0, true }
+        if e0_t0 && e1_t1 {return e0, e1, true}
+        if e0_t1 && e1_t0 {return e1, e0, true}
         return nil, nil, false
     }
 
@@ -247,7 +207,12 @@ update_events :: proc(game: ^Game) {
             }
         }
 
-        if skull, projectile, ok := is_contact_pair(e0, e1, Variant_EnemySkull, Variant_Projectile); ok {
+        if skull, projectile, ok := is_contact_pair(
+            e0,
+            e1,
+            Variant_EnemySkull,
+            Variant_Projectile,
+        ); ok {
             if health, has_health := &skull.health.?; (has_health && health.points > 0) {
                 health.points -= 1
                 skull.hit_time = time.now()
@@ -271,25 +236,28 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
         )
     }
 
+    if health, has_health := e.health.?; has_health && (!util.is_some(e.expiry) && health.points <= 0) {
+        if _, is_player := e.variant.(Variant_Player); !is_player {
+            e.expiry = time.time_add(time.now(), time.Millisecond*200)
+        }
+    }
+
     if expiry, has_expiry := e.expiry.?; has_expiry && time.since(expiry) > 0 {
         kill_entity(e)
         return
     }
 
-    if health, has_health := e.health.?; has_health && health.points <= 0 {
-        if _, is_player := e.variant.(Variant_Player); !is_player {
-            kill_entity(e)
-        }
-        return
-    }
-
     #partial switch &v in e.variant {
     case Variant_Player:
+        if !is_player_alive(game) {
+            break
+        }
+
         game.camera.offset = {f32(rl.GetScreenWidth()) / 2, f32(rl.GetScreenHeight()) / 2}
         game.camera.target = linalg.lerp(game.camera.target, pos, 0.5)
         game.camera.zoom = 2
 
-        aim_and_shoot(game);
+        aim_and_shoot(game)
 
         mv := rl.Vector2{}
         if rl.IsKeyDown(.A) {mv.x -= 1}
@@ -301,7 +269,7 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
             b2.Body_ApplyForceToCenter(e.body, b2.Normalize(mv) * v.force, true)
         }
     case Variant_EnemySpear:
-        if game.special_entities.player.health.?.points <= 0 {
+        if !is_player_alive(game) {
             break
         }
 
@@ -332,13 +300,12 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
             10,
         )
 
-        if game.special_entities.player.health.?.points <= 0 {
-            b2.Body_SetAngularVelocity(e.body, -impulse)
-            b2.Body_ApplyForceToCenter(e.body, -vec_to_player * v.force, true)
-        } else {
-
+        if is_player_alive(game) {
             b2.Body_SetAngularVelocity(e.body, impulse)
             b2.Body_ApplyForceToCenter(e.body, vec_to_player * v.force, true)
+        } else {
+            b2.Body_SetAngularVelocity(e.body, -impulse)
+            b2.Body_ApplyForceToCenter(e.body, -vec_to_player * v.force, true)
         }
     }
 }
@@ -400,8 +367,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
         }
     }
 
-    if texture, texture_found := game.textures[e.sprite]; texture_found {
-        entity_rect := rl.Rectangle{pos.x, pos.y, e.uv.width, e.uv.height}
+    if texture, texture_found := game.textures[e.sprite.id]; texture_found {
+        entity_rect := rl.Rectangle{pos.x, pos.y, e.sprite.uv.width, e.sprite.uv.height}
 
         shader, shader_info, using_shader := get_entity_shader(game, e)
         if using_shader {
@@ -410,9 +377,9 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
         }
 
         tint := rl.WHITE
-        uv := e.uv
+        uv := e.sprite.uv
 
-        if e.sprite_upright {
+        if e.sprite.keep_upright {
             angle := b2.Rot_GetAngle(b2.Body_GetRotation(e.body))
             if angle > math.PI / 2.0 || angle < -math.PI / 2.0 {
                 uv.y = uv.y + uv.height
@@ -420,19 +387,22 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
             }
         }
 
+        if util.is_some(e.fade_duration) {
+            fade_duration := e.fade_duration.?
+
+            if time.since(e.birth) < fade_duration {
+                fade_in_step := math.smoothstep(0.0, time.duration_seconds(fade_duration), time.duration_seconds(time.since(e.birth)))
+                tint = rl.ColorAlpha(tint, f32(math.sin(math.lerp(0.0, math.PI/2, fade_in_step))))
+            }
+            else if util.is_some(e.expiry) {
+                d := time.duration_seconds(time.since(time.time_add(e.expiry.?, -fade_duration)))
+                fade_out_step := math.smoothstep(0.0, time.duration_seconds(fade_duration), d)
+                tint = rl.ColorAlpha(tint, f32(math.cos(math.lerp(0.0, math.PI/2.0, fade_out_step))))
+            }
+        }
+
         #partial switch v in e.variant {
         case Variant_EnemySpear:
-            step := math.smoothstep(
-                0.0,
-                time.duration_seconds(time.diff(e.birth, e.expiry.?)),
-                time.duration_seconds(time.diff(e.birth, time.now())),
-            )
-            tint = rl.ColorAlpha(
-                tint,
-                f32(math.min(5 * math.sin(math.lerp(0.0, math.PI, step)), 1)),
-            )
-            rl.SetTextureFilter(texture, .POINT)
-
             until_launch_ms := time.since(v.launch_time) / time.Millisecond
             switch {
             case until_launch_ms > -50:
@@ -454,8 +424,8 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
             texture,
             uv,
             entity_rect,
-            e.uv_origin,
-            math.to_degrees(e.uv_rot + b2.Rot_GetAngle(rot)),
+            e.sprite.uv_origin,
+            math.to_degrees(e.sprite.uv_rot + b2.Rot_GetAngle(rot)),
             tint,
         )
 
@@ -485,14 +455,19 @@ draw_ui :: proc(game: ^Game) {
     if health, has_health := player.health.?; has_health {
         for hp := 0; hp <= health.points; hp += 1 {
             rl.DrawTexturePro(
-                game.textures[player.sprite],
-                player.uv,
+                game.textures[player.sprite.id],
+                player.sprite.uv,
                 rl.Rectangle{f32(rl.GetScreenWidth() - i32(hp * 32)), 0, 32, 32},
                 {},
                 0,
                 rl.ColorAlpha(rl.WHITE, 0.5),
             )
         }
+
+
+        time_buf := [time.MIN_HMS_LEN]u8{}
+        time := time.duration_to_string_hms(time.since(game.play_start_time), time_buf[:])
+        rl.DrawText(fmt.ctprint(time), 0, 0, 18, rl.WHITE)
 
         if health.points <= 0 {
             rl.DrawRectangle(
@@ -529,7 +504,12 @@ draw_ui :: proc(game: ^Game) {
 
 EntitySetupProc :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, angle := b2.Rot_identity)
 
-new_entity :: proc(game: ^Game, setup_proc: EntitySetupProc, pos := b2.Vec2{}, angle := b2.Rot_identity) -> ^Entity {
+new_entity :: proc(
+    game: ^Game,
+    setup_proc: EntitySetupProc,
+    pos := b2.Vec2{},
+    angle := b2.Rot_identity,
+) -> ^Entity {
     new_entity: ^Entity
     for &e in game.entities {
         if .ALLOCATED not_in e.flags {
@@ -551,189 +531,41 @@ kill_entity :: proc(e: ^Entity) {
     mem.set(e, 0, size_of(Entity))
 }
 
-get_default_defs :: proc() -> (b2.BodyDef, b2.ShapeDef) {
-    body_def := b2.DefaultBodyDef()
-    body_def.type = .dynamicBody
-    body_def.fixedRotation = false
-
-    return body_def, b2.DefaultShapeDef()
-}
-
-ShapeFilterFlags :: enum {
-    Player = 1,
-    Skull  = 2,
-    Spear  = 4,
-    Bullet = 8
-}
-
-setup_entity_player :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, rot := b2.Rot_identity) {
-    e.sprite = "slime"
-    e.uv = {0, 0, 16, 16}
-    e.uv_origin = {8, 8}
-    e.variant = Variant_Player {
-        force = 4000,
-        weapon = make_weapon(time.Millisecond*500, .SLIME_BOLT)
-    }
-    e.health = Health {
-        points = 3,
-        max    = 3,
-    }
-
-    body_def, shape_def := get_default_defs()
-    body_def.position = pos
-    body_def.rotation = rot
-    body_def.automaticMass = false
-    body_def.linearDamping = 10
-    e.body = b2.CreateBody(world, body_def)
-    b2.Body_SetMassData(e.body, b2.MassData{8, {}, 0})
-
-    shape_def.userData = e
-    shape_def.filter.categoryBits = u32(ShapeFilterFlags.Player)
-    shape_def.filter.maskBits = u32(ShapeFilterFlags.Skull | .Spear)
-    e.shape = b2.CreateCircleShape(e.body, shape_def, b2.Circle{b2.Vec2{0, 0}, 7})
-}
-
-setup_entity_spear :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, rot := b2.Rot_identity) {
-    e.sprite = "spear"
-    e.shader = make_shader_pixel_glow(rl.WHITE, size = 0.6, threshold = 0.1, intensity = 0.5)
-    e.uv = {0, 0, 32, 32}
-    e.uv_origin = {16, 16}
-    e.uv_rot = math.to_radians_f32(-45.0)
-    e.variant = Variant_EnemySpear {
-        force = 500,
-    }
-    e.expiry = time.time_add(time.now(), time.Second * 5)
-
-    body_def, shape_def := get_default_defs()
-    body_def.position = pos
-    body_def.automaticMass = false
-    body_def.linearDamping = 0
-    body_def.isBullet = true
-    e.body = b2.CreateBody(world, body_def)
-    b2.Body_SetMassData(e.body, b2.MassData{1, {}, 0})
-
-    shape_def.userData = e
-    shape_def.enablePreSolveEvents = true
-    shape_def.restitution = 0.3
-    shape_def.isSensor = true
-    shape_def.filter.categoryBits = u32(ShapeFilterFlags.Spear)
-    shape_def.filter.maskBits = u32(ShapeFilterFlags.Player)
-
-    pixel_hull := []rl.Vector2{{-13, -12}, {-12, -13}, {13, 12}, {12, 13}}
-    for &v in pixel_hull {
-        v = rl.Vector2Rotate(v, e.uv_rot)
-    }
-    e.shape = b2.CreatePolygonShape(
-        e.body,
-        shape_def,
-        b2.MakePolygon(b2.ComputeHull(pixel_hull), 0),
-    )
-}
-
-setup_entity_skull :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, rot := b2.Rot_identity) {
-    e.sprite = "skull"
-    e.sprite_upright = true
-    e.uv = {0, 0, 16, 16}
-    e.uv_origin = {8, 8}
-    e.uv_rot = 0
-    e.health = Health {
-        points = 3,
-        max = 3
-    }
-    e.variant = Variant_EnemySkull {
-        force = 50,
-    }
-
-    body_def, shape_def := get_default_defs()
-    body_def.position = pos
-    body_def.rotation = rot
-    body_def.automaticMass = false
-    body_def.linearDamping = 1
-    e.body = b2.CreateBody(world, body_def)
-    b2.Body_SetMassData(e.body, b2.MassData{1, {}, 0})
-
-    shape_def.userData = e
-    shape_def.filter.categoryBits = u32(ShapeFilterFlags.Skull)
-    shape_def.filter.maskBits = u32(ShapeFilterFlags.Player | .Skull | .Bullet)
-    e.shape = b2.CreateCircleShape(e.body, shape_def, b2.Circle{{}, 6})
-}
-
-setup_entity_slime_bolt :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}, rot := b2.Rot_identity) {
-    e.sprite = "slime_bolt"
-    e.uv = {0, 0, 16, 16}
-    e.uv_origin = {8, 8}
-    e.uv_rot = math.to_radians_f32(45)
-    e.variant = Variant_Projectile {
-        force = 75
-    }
-
-    body_def, shape_def := get_default_defs()
-    body_def.position = pos
-    body_def.rotation = rot
-    body_def.automaticMass = false
-    body_def.linearDamping = 0
-    body_def.isBullet = false
-    e.body = b2.CreateBody(world, body_def)
-    b2.Body_SetMassData(e.body, b2.MassData{0.25, {}, 0})
-
-    shape_def.userData = e
-    shape_def.filter.categoryBits = u32(ShapeFilterFlags.Bullet)
-    shape_def.filter.maskBits = u32(ShapeFilterFlags.Skull)
-    e.shape = b2.CreateCircleShape(e.body, shape_def, b2.Circle{{}, 6})
-}
-
 aim_and_shoot :: proc(game: ^Game) {
     player := game.special_entities.player
     variant := &player.variant.(Variant_Player)
 
-    vec_to_mouse := b2.Normalize(rl.GetScreenToWorld2D(rl.GetMousePosition(), game.camera) - b2.Body_GetPosition(player.body))
+    vec_to_mouse := b2.Normalize(
+        rl.GetScreenToWorld2D(rl.GetMousePosition(), game.camera) -
+        b2.Body_GetPosition(player.body),
+    )
 
     if time.since(variant.last_shot) < variant.weapon.fire_rate {
         return
     }
 
     switch variant.weapon.type {
-        case .SLIME_BOLT:
-            if (rl.IsMouseButtonDown(.LEFT)) {
-                bullet := new_entity(game, setup_entity_slime_bolt, b2.Body_GetPosition(player.body), b2.MakeRot(math.atan2(vec_to_mouse.y, vec_to_mouse.x)))
-                b2.Body_ApplyLinearImpulseToCenter(bullet.body, vec_to_mouse * bullet.variant.(Variant_Projectile).force, true)
-                rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.5, 1.5))
-                rl.PlaySound(game.sounds["slime_bolt"])
+    case .SLIME_BOLT:
+        if (rl.IsMouseButtonDown(.LEFT)) {
+            bullet := new_entity(
+                game,
+                setup_entity_slime_bolt,
+                b2.Body_GetPosition(player.body),
+                b2.MakeRot(math.atan2(vec_to_mouse.y, vec_to_mouse.x)),
+            )
+            b2.Body_ApplyLinearImpulseToCenter(
+                bullet.body,
+                vec_to_mouse * bullet.variant.(Variant_Projectile).force,
+                true,
+            )
+            rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.5, 1.5))
+            rl.PlaySound(game.sounds["slime_bolt"])
 
-                variant.last_shot = time.now()
-            }
+            variant.last_shot = time.now()
+        }
     }
-
 }
 
-spawner :: proc(game: ^Game) {
-    if game.special_entities.player.health.?.points <= 0 {
-        return
-    }
-
-    angle := rand.float32_range(0, math.TAU)
-
-    switch {
-    case time.since(game.spawn_timers.next_spear) > 0:
-        distance := f32(125)
-
-        new_spear_pos :=
-            b2.Body_GetPosition(game.special_entities.player.body) +
-            ({math.cos(angle), math.sin(angle)} * distance)
-
-        spear := new_entity(game, setup_entity_spear, new_spear_pos)
-        spear_v := &spear.variant.(Variant_EnemySpear)
-        spear_v.launch_time = time.time_add(time.now(), time.Millisecond * 1500)
-
-        game.spawn_timers.next_spear = time.time_add(time.now(), time.Millisecond * 5000)
-    case time.since(game.spawn_timers.next_skull) > 0:
-        distance := rand.float32_range(200, 300)
-
-        new_skull_pos :=
-            b2.Body_GetPosition(game.special_entities.player.body) +
-            ({math.cos(angle), math.sin(angle)} * distance)
-        skull := new_entity(game, setup_entity_skull, new_skull_pos)
-
-        game.spawn_timers.next_skull = time.time_add(time.now(), time.Second * 1)
-    }
+is_player_alive :: proc(game: ^Game) -> bool {
+    return game.special_entities.player.health.?.points > 0
 }
