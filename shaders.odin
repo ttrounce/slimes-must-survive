@@ -7,6 +7,7 @@ ShaderInfo :: struct {
 	load_uniforms: proc(shader: rl.Shader, info: ShaderInfo),
 	variant:       union {
 		ShaderVariant_PixelGlow,
+        ShaderVariant_Mix,
 	},
 }
 
@@ -15,6 +16,11 @@ ShaderVariant_PixelGlow :: struct {
 	glowSize:      f32,
 	glowThreshold: f32,
 	glowIntensity: f32,
+}
+
+ShaderVariant_Mix :: struct {
+    color: rl.Color,
+    intensity: f32
 }
 
 make_shader_pixel_glow :: proc(color: rl.Color, size := f32(0.5), threshold := f32(0.5), intensity := f32(0.5)) -> ShaderInfo {
@@ -40,6 +46,32 @@ make_shader_pixel_glow :: proc(color: rl.Color, size := f32(0.5), threshold := f
             rl.SetShaderValue(shader, rl.GetShaderLocation(shader, "glowIntensity"), &pixel_glow.glowIntensity, .FLOAT)
 		},
 	}
+}
+
+make_shader_mix :: proc(color: rl.Color, intensity: f32) -> ShaderInfo {
+    return ShaderInfo {
+        id = "mix",
+        variant = ShaderVariant_Mix {
+            color, intensity
+        },
+        load_uniforms = proc(shader: rl.Shader, info: ShaderInfo) {
+            whiteout, ok := info.variant.(ShaderVariant_Mix)
+			if !ok {
+				return
+			}
+
+            normalized_color := rl.ColorNormalize(whiteout.color)
+			rl.SetShaderValueV(
+				shader,
+				rl.GetShaderLocation(shader, "mixColor"),
+				raw_data(normalized_color[:]),
+				.VEC3,
+				1,
+			)
+
+            rl.SetShaderValue(shader, rl.GetShaderLocation(shader, "intensity"), &whiteout.intensity, .FLOAT)
+        }
+    }
 }
 
 get_entity_shader :: proc(

@@ -22,10 +22,14 @@ main :: proc() {
     rl.InitWindow(START_WINDOW_SIZE.x, START_WINDOW_SIZE.y, START_WINDOW_TITLE)
     defer rl.CloseWindow()
 
+    rl.InitAudioDevice()
+    defer rl.CloseAudioDevice()
+
     game := Game{}
     setup(&game)
 
     for !rl.WindowShouldClose() {
+        rl.SetWindowTitle(fmt.ctprintf("%s %.1f", START_WINDOW_TITLE, 1.0/rl.GetFrameTime()))
         rl.ClearBackground(rl.WHITE)
 
         update(&game)
@@ -44,6 +48,7 @@ Game :: struct {
     world:            b2.WorldId,
     textures:         map[string]rl.Texture2D,
     shaders:          map[string]rl.Shader,
+    sounds:          map[string]rl.Sound,
     state:            GameState,
     entities:         [MAX_ENTITIES]Entity,
     handle_counter:   u32,
@@ -80,6 +85,7 @@ Entity :: struct {
     birth:          time.Time,
     health:         Maybe(Health),
     sprite_upright: bool,
+    hit_time:       time.Time,
 }
 
 EntityFlags :: enum {
@@ -139,6 +145,10 @@ setup :: proc(game: ^Game) {
 
     game.shaders = make(map[string]rl.Shader)
     game.shaders["pixel_glow"] = rl.LoadShader(nil, "shaders/pixel_glow.fs")
+    game.shaders["mix"] = rl.LoadShader(nil, "shaders/mix.fs")
+
+    game.sounds = make(map[string]rl.Sound)
+    game.sounds["hit"] = rl.LoadSound("assets/hit.ogg")
 
     game.special_entities.player = new_entity(game, setup_entity_player)
 }
@@ -152,6 +162,10 @@ clean :: proc(game: ^Game) {
 
     for _, shader in game.shaders {
         rl.UnloadShader(shader)
+    }
+
+    for _, sound in game.sounds {
+        rl.UnloadSound(sound)
     }
 
     delete(game.textures)
@@ -187,7 +201,10 @@ update_events :: proc(game: ^Game) {
 
         if spear, is_spear := sensor.variant.(Variant_EnemySpear); is_spear {
             if health, has_health := &visitor.health.?; (has_health && health.points > 0) {
+                rl.SetSoundPitch(game.sounds["hit"], math.lerp(f32(0.6), 0.8, f32(health.points)/f32(health.max)))
+                rl.PlaySound(game.sounds["hit"])
                 health.points -= 1
+                visitor.hit_time = time.now()
             }
             b2.Body_SetLinearDamping(sensor.body, 3.5)
         }
@@ -200,7 +217,10 @@ update_events :: proc(game: ^Game) {
         if skull, is_skull := entity_b.variant.(Variant_EnemySkull); is_skull {
             if player, is_player := entity_a.variant.(Variant_Player); is_player {
                 if health, has_health := &entity_a.health.?; (has_health && health.points > 0) {
+                    rl.SetSoundPitch(game.sounds["hit"], math.lerp(f32(0.6), 0.8, f32(health.points)/f32(health.max)))
+                    rl.PlaySound(game.sounds["hit"])
                     health.points -= 1
+                    entity_a.hit_time = time.now()
                 }
             }
         }
@@ -209,6 +229,14 @@ update_events :: proc(game: ^Game) {
 
 update_entity :: proc(game: ^Game, e: ^Entity) {
     pos := b2.Body_GetPosition(e.body)
+
+    hit_length :: time.Millisecond * 250
+    if time.since(e.hit_time) < hit_length {
+        end := time.diff(e.hit_time, time.time_add(e.hit_time, hit_length))
+        now := time.diff(e.hit_time, time.now())
+        step := math.smoothstep(0.0, time.duration_seconds(end), time.duration_seconds(now))
+        e.shader = make_shader_mix(rl.WHITE, f32(math.min(math.cos(math.lerp(0.0, math.PI/2, step)), 1)))
+    }
 
     if expiry, has_expiry := e.expiry.?; has_expiry && time.since(expiry) > 0 {
         kill_entity(e)
@@ -264,14 +292,16 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
         player_pos := b2.Body_GetPosition(game.special_entities.player.body)
         vec_to_player := b2.Normalize(player_pos - pos)
 
+        impulse := b2.ComputeAngularVelocity(
+            b2.Body_GetRotation(e.body),
+            b2.MakeRot(math.atan2(vec_to_player.y, vec_to_player.x)),
+            10,
+        )
+
         if game.special_entities.player.health.?.points <= 0 {
+            b2.Body_SetAngularVelocity(e.body, -impulse)
             b2.Body_ApplyForceToCenter(e.body, -vec_to_player * v.force, true)
         } else {
-            impulse := b2.ComputeAngularVelocity(
-                b2.Body_GetRotation(e.body),
-                b2.MakeRot(math.atan2(vec_to_player.y, vec_to_player.x)),
-                10,
-            )
 
             b2.Body_SetAngularVelocity(e.body, impulse)
             b2.Body_ApplyForceToCenter(e.body, vec_to_player * v.force, true)
@@ -381,7 +411,7 @@ draw_entity :: proc(game: ^Game, e: ^Entity) {
         case Variant_Player:
             if health, has_health := e.health.?; has_health {
                 if health.points <= 0 {
-                    uv.x = 48
+                    uv.x = 64
                 }
             }
         }
@@ -503,7 +533,7 @@ ShapeFilterFlags :: enum {
 
 setup_entity_player :: proc(e: ^Entity, world: b2.WorldId, pos := b2.Vec2{}) {
     e.sprite = "slime"
-    e.uv = {16, 0, 16, 16}
+    e.uv = {0, 0, 16, 16}
     e.uv_origin = {8, 8}
     e.variant = Variant_Player {
         force = 4000,
@@ -605,7 +635,7 @@ spawner :: proc(game: ^Game) {
         spear_v := &spear.variant.(Variant_EnemySpear)
         spear_v.launch_time = time.time_add(time.now(), time.Millisecond * 1500)
 
-        game.spawn_timers.next_spear = time.time_add(time.now(), time.Second * 2)
+        game.spawn_timers.next_spear = time.time_add(time.now(), time.Millisecond * 1500)
     case time.since(game.spawn_timers.next_skull) > 0:
         distance := rand.float32_range(200, 300)
 
