@@ -56,7 +56,7 @@ spawner_stage_x :: proc(game: ^Game) {
     switch {
     case time.since(game.spawn_timers.next_skull) > 0:
         spawn_skull(game)
-        game.spawn_timers.next_skull = time.time_add(time.now(), time.Second * 1)
+        game.spawn_timers.next_skull = time.time_add(time.now(), time.Millisecond * 500)
     case time.since(game.spawn_timers.next_spear) > 0:
         spawn_spear(game)
         game.spawn_timers.next_spear = time.time_add(time.now(), time.Second * 3)

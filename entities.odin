@@ -91,7 +91,7 @@ setup_entity_player :: proc(
     } 
     e.variant = Variant_Player {
         force  = 4000,
-        weapon = make_weapon(time.Millisecond * 500, .SLIME_BOLT),
+        weapon = make_weapon(time.Millisecond * 500, 3, 0.1, .SLIME_BOLT),
     }
     e.health = Health {
         points = 3,
@@ -208,6 +208,7 @@ setup_entity_slime_bolt :: proc(
     e.variant = Variant_Projectile {
         force = 75,
     }
+    e.expiry = time.time_add(time.now(), time.Second*5)
 
     body_def, shape_def := get_default_defs()
     body_def.position = pos

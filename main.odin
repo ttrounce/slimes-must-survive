@@ -26,15 +26,17 @@ main :: proc() {
     rl.InitAudioDevice()
     defer rl.CloseAudioDevice()
 
-    game := Game{}
-    setup(&game)
+    game := new(Game)
+    defer free(game)
+
+    setup(game)
 
     for !rl.WindowShouldClose() {
         rl.SetWindowTitle(fmt.ctprintf("%s %.1f", START_WINDOW_TITLE, 1.0 / rl.GetFrameTime()))
         rl.ClearBackground(rl.WHITE)
 
-        update(&game)
-        draw(&game)
+        update(game)
+        draw(game)
     }
 }
 
@@ -550,17 +552,22 @@ aim_and_shoot :: proc(game: ^Game) {
     switch variant.weapon.type {
     case .SLIME_BOLT:
         if (rl.IsMouseButtonDown(.LEFT)) {
-            bullet := new_entity(
-                game,
-                setup_entity_slime_bolt,
-                b2.Body_GetPosition(player.body),
-                b2.MakeRot(math.atan2(vec_to_mouse.y, vec_to_mouse.x)),
-            )
-            b2.Body_ApplyLinearImpulseToCenter(
-                bullet.body,
-                vec_to_mouse * bullet.variant.(Variant_Projectile).force,
-                true,
-            )
+            for i := 0; i < variant.weapon.projectiles; i+=1 {
+                theta := math.atan2_f32(vec_to_mouse.y, vec_to_mouse.x)
+                delta := (f32(i) - f32(variant.weapon.projectiles)/2.0 + 0.5)*variant.weapon.spread
+                bullet := new_entity(
+                    game,
+                    setup_entity_slime_bolt,
+                    b2.Body_GetPosition(player.body),
+                    b2.MakeRot(theta + delta),
+                )
+               
+                b2.Body_ApplyLinearImpulseToCenter(
+                    bullet.body,
+                    rl.Vector2Rotate(vec_to_mouse, delta) * bullet.variant.(Variant_Projectile).force,
+                    true,
+                )
+            }
             rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.9, 1.1))
             rl.PlaySound(game.sounds["slime_bolt"])
 

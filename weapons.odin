@@ -3,14 +3,16 @@ package main
 import "core:time"
 
 WeaponType :: enum {
-    SLIME_BOLT,
+	SLIME_BOLT,
 }
 
 Weapon :: struct {
-    fire_rate: time.Duration,
-    type:      WeaponType,
+	fire_rate:   time.Duration,
+	projectiles: int,
+    spread:      f32,
+	type:        WeaponType,
 }
 
-make_weapon :: proc(fire_rate: time.Duration, type: WeaponType) -> Weapon {
-    return Weapon{fire_rate, type}
+make_weapon :: proc(fire_rate: time.Duration, projectiles: int, spread: f32, type: WeaponType) -> Weapon {
+	return Weapon{fire_rate, projectiles, spread, type}
 }
