@@ -17,6 +17,8 @@ spawn_spear :: proc(game: ^Game) {
     spear := new_entity(game, setup_entity_spear, new_spear_pos)
     spear_v := &spear.variant.(Variant_EnemySpear)
     spear_v.launch_time = time.time_add(time.now(), time.Millisecond * 1500)
+
+    play_sound(game.sounds["spear_charging"], rand.float32_range(1.0, 1.3), 1.0)
 }
 
 spawn_skull :: proc(game: ^Game) {

@@ -112,7 +112,9 @@ setup :: proc(game: ^Game) {
 
     game.sounds = make(map[string]rl.Sound)
     game.sounds["hit"] = rl.LoadSound("assets/hit.ogg")
+    game.sounds["skull_hit"] = rl.LoadSound("assets/skull_hit.ogg")
     game.sounds["slime_bolt"] = rl.LoadSound("assets/slime_bolt.ogg")
+    game.sounds["spear_charging"] = rl.LoadSound("assets/spear_charging.ogg")
 
     game.special_entities.player = new_entity(game, setup_entity_player)
 
@@ -214,6 +216,7 @@ update_events :: proc(game: ^Game) {
             Variant_Projectile,
         ); ok {
             if health, has_health := &skull.health.?; (has_health && health.points > 0) {
+                play_sound(game.sounds["skull_hit"], rand.float32_range(0.9, 1.1), 1.0)
                 health.points -= 1
                 skull.hit_time = time.now()
             }
@@ -236,17 +239,17 @@ update_entity :: proc(game: ^Game, e: ^Entity) {
         )
     }
 
-    if health, has_health := e.health.?; has_health && (!util.is_some(e.expiry) && health.points <= 0) {
+    if util.is_some(e.health) && (!util.is_some(e.expiry) && e.health.?.points <= 0) {
         if _, is_player := e.variant.(Variant_Player); !is_player {
             e.expiry = time.time_add(time.now(), time.Millisecond*200)
         }
     }
 
-    if expiry, has_expiry := e.expiry.?; has_expiry && time.since(expiry) > 0 {
+    if util.is_some(e.expiry) && time.since(e.expiry.?) > 0 {
         kill_entity(e)
         return
     }
-
+   
     #partial switch &v in e.variant {
     case Variant_Player:
         if !is_player_alive(game) {
@@ -558,7 +561,7 @@ aim_and_shoot :: proc(game: ^Game) {
                 vec_to_mouse * bullet.variant.(Variant_Projectile).force,
                 true,
             )
-            rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.5, 1.5))
+            rl.SetSoundPitch(game.sounds["slime_bolt"], rand.float32_range(0.9, 1.1))
             rl.PlaySound(game.sounds["slime_bolt"])
 
             variant.last_shot = time.now()
